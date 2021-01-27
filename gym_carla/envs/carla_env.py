@@ -22,6 +22,9 @@ import carla
 from gym_carla.envs.render import BirdeyeRender
 from gym_carla.envs.route_planner import RoutePlanner
 from gym_carla.envs.misc import *
+import logging
+
+logging.root.setLevel(logging.DEBUG)
 
 
 class CarlaEnv(gym.Env):
@@ -35,6 +38,7 @@ class CarlaEnv(gym.Env):
         self.number_of_walkers = params['number_of_walkers']
         self.dt = params['dt']
         self.task_mode = params['task_mode']
+        self.route_path = params['route_path']
         self.max_time_episode = params['max_time_episode']
         self.max_waypt = params['max_waypt']
         self.obs_range = params['obs_range']
@@ -150,6 +154,7 @@ class CarlaEnv(gym.Env):
             x, y = np.meshgrid(np.arange(self.pixor_size), np.arange(self.pixor_size))  # make a canvas with coordinates
             x, y = x.flatten(), y.flatten()
             self.pixel_grid = np.vstack((x, y)).T
+        logging.debug("Carla Env Init")
 
     def reset(self):
         # Clear sensor objects
@@ -164,6 +169,56 @@ class CarlaEnv(gym.Env):
         # Disable sync mode
         self._set_synchronous_mode(False)
 
+        # Get actors polygon list
+        self.vehicle_polygons = []
+        vehicle_poly_dict = self._get_actor_polygons('vehicle.*')
+        self.vehicle_polygons.append(vehicle_poly_dict)
+        self.walker_polygons = []
+        walker_poly_dict = self._get_actor_polygons('walker.*')
+        self.walker_polygons.append(walker_poly_dict)
+
+        # Spawn the ego vehicle
+        transform = None
+        ego_spawn_times = 0
+        while True:
+            if ego_spawn_times > self.max_ego_spawn_times:
+                logging.debug("Auto reset!")
+                self.reset()
+
+            if self.task_mode == 'random':
+                transform = random.choice(self.vehicle_spawn_points)
+            if self.task_mode == 'roundabout':
+                self.start = [52.1 + np.random.uniform(-5, 5), -4.2, 178.66]  # random
+                transform = set_carla_transform(self.start)
+            if self.task_mode == 'route':
+                init_wp = RoutePlanner.get_init_pos(self.world, self.route_path)
+
+                # now find a suitable location to spawn
+                candidates = self.world.get_map().get_spawn_points()
+                init_t = candidates[0]
+                d_min = 360
+                for candidate in candidates:
+                    d = distance_vehicle(init_wp, candidate)
+                    if d < 1 and d < d_min:
+                        d_min = d
+                        init_t = candidate
+
+                logging.debug(f"Nearest location is {d_min} away.")
+                logging.debug(
+                    f"Trying to spawn ego at (x={init_t.location.x}, y={init_t.location.y}, z={init_t.location.z})")
+                transform = init_t
+
+            if not transform:
+                raise Exception("Couldn't spawn ego vehicle!")
+
+            if self._try_spawn_ego_vehicle_at(transform):
+                logging.debug("Ego spawned!")
+                break
+            else:
+                logging.debug("Couldn't spawn ego")
+                ego_spawn_times += 1
+                time.sleep(0.1)
+
         # Spawn surrounding vehicles
         random.shuffle(self.vehicle_spawn_points)
         count = self.number_of_vehicles
@@ -176,6 +231,7 @@ class CarlaEnv(gym.Env):
         while count > 0:
             if self._try_spawn_random_vehicle_at(random.choice(self.vehicle_spawn_points), number_of_wheels=[4]):
                 count -= 1
+        logging.debug("Surrounding vehicles spawned!")
 
         # Spawn pedestrians
         random.shuffle(self.walker_spawn_points)
@@ -189,32 +245,7 @@ class CarlaEnv(gym.Env):
         while count > 0:
             if self._try_spawn_random_walker_at(random.choice(self.walker_spawn_points)):
                 count -= 1
-
-        # Get actors polygon list
-        self.vehicle_polygons = []
-        vehicle_poly_dict = self._get_actor_polygons('vehicle.*')
-        self.vehicle_polygons.append(vehicle_poly_dict)
-        self.walker_polygons = []
-        walker_poly_dict = self._get_actor_polygons('walker.*')
-        self.walker_polygons.append(walker_poly_dict)
-
-        # Spawn the ego vehicle
-        ego_spawn_times = 0
-        while True:
-            if ego_spawn_times > self.max_ego_spawn_times:
-                self.reset()
-
-            if self.task_mode == 'random':
-                transform = random.choice(self.vehicle_spawn_points)
-            if self.task_mode == 'roundabout':
-                self.start = [52.1 + np.random.uniform(-5, 5), -4.2, 178.66]  # random
-                # self.start=[52.1,-4.2, 178.66] # static
-                transform = set_carla_transform(self.start)
-            if self._try_spawn_ego_vehicle_at(transform):
-                break
-            else:
-                ego_spawn_times += 1
-                time.sleep(0.1)
+        logging.debug("Pedestrians spawned!")
 
         # Add collision sensor
         self.collision_sensor = self.world.spawn_actor(self.collision_bp, carla.Transform(), attach_to=self.ego)
@@ -255,13 +286,15 @@ class CarlaEnv(gym.Env):
         self.settings.synchronous_mode = True
         self.world.apply_settings(self.settings)
 
-        self.routeplanner = RoutePlanner(self.ego, self.max_waypt)
+        self.routeplanner = RoutePlanner(self.ego, self.max_waypt, self.route_path)
         self.waypoints, _, self.vehicle_front = self.routeplanner.run_step()
 
         # Set ego information for render
         self.birdeye_render.set_hero(self.ego, self.ego.id)
 
-        return self._get_obs()
+        obs = self._get_obs()
+        logging.debug("Reset!")
+        return obs
 
     def step(self, action):
         # Calculate acceleration and steering
@@ -363,7 +396,7 @@ class CarlaEnv(gym.Env):
         self.world.apply_settings(self.settings)
 
     def _try_spawn_random_vehicle_at(self, transform, number_of_wheels=[4]):
-        """Try to spawn a surrounding vehicle at specific transform with random bluprint.
+        """Try to spawn a surrounding vehicle at specific transform with random blueprint.
 
         Args:
           transform: the carla transform object.
@@ -653,21 +686,25 @@ class CarlaEnv(gym.Env):
 
         # If collides
         if len(self.collision_hist) > 0:
+            logging.debug("Collision detected!")
             return True
 
         # If reach maximum timestep
         if self.time_step > self.max_time_episode:
+            logging.debug("Maximum step reached!")
             return True
 
         # If at destination
         if self.dests is not None:  # If at destination
             for dest in self.dests:
                 if np.sqrt((ego_x - dest[0]) ** 2 + (ego_y - dest[1]) ** 2) < 4:
+                    logging.debug("Destination reached!")
                     return True
 
         # If out of lane
         dis, _ = get_lane_dis(self.waypoints, ego_x, ego_y)
         if abs(dis) > self.out_lane_thres:
+            logging.debug("Out of lane!")
             return True
 
         return False

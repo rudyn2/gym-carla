@@ -13,9 +13,14 @@ from enum import Enum
 from collections import deque
 import random
 import numpy as np
+import xmltodict
 import carla
+import logging
 
 from gym_carla.envs.misc import distance_vehicle, is_within_distance_ahead, compute_magnitude_angle
+from leaderboard.utils.route_manipulation import interpolate_trajectory
+
+logger = logging.root
 
 
 class RoadOption(Enum):
@@ -29,60 +34,52 @@ class RoadOption(Enum):
     LANEFOLLOW = 4
 
 
-class RoutePlanner():
-    def __init__(self, vehicle, buffer_size):
+class RoutePlanner:
+    def __init__(self, vehicle, buffer_size, route_path):
         self._vehicle = vehicle
         self._world = self._vehicle.get_world()
         self._map = self._world.get_map()
+        self._route_path = route_path
 
-        self._sampling_radius = 5
         self._min_distance = 4
 
         self._target_waypoint = None
         self._buffer_size = buffer_size
-        self._waypoint_buffer = deque(maxlen=self._buffer_size)
 
-        self._waypoints_queue = deque(maxlen=600)
         self._current_waypoint = self._map.get_waypoint(self._vehicle.get_location())
-        self._waypoints_queue.append((self._current_waypoint.next(self._sampling_radius)[0], RoadOption.LANEFOLLOW))
         self._target_road_option = RoadOption.LANEFOLLOW
 
         self._last_traffic_light = None
         self._proximity_threshold = 15.0
 
-        self._compute_next_waypoints(k=200)
+        self._waypoint_buffer = self._load_route(self._world, self._route_path, self._buffer_size)
 
-    def _compute_next_waypoints(self, k=1):
-        """
-        Add new waypoints to the trajectory queue.
+    @staticmethod
+    def _load_route(world, route_path, buffer_size):
+        map = world.get_map()
+        waypoint_buffer = deque(maxlen=buffer_size)
+        with open(route_path, "r") as xml_obj:
+            routes_xml = xmltodict.parse(xml_obj.read())['routes']['route']
+            route = routes_xml[0]
+            trajectory = []
+            for waypoint in route['waypoint']:
+                loc = carla.Location(x=float(waypoint['@x']),
+                                     y=float(waypoint['@y']),
+                                     z=float(waypoint['@z']))
+                trajectory.append(loc)
+            new_trajectory = interpolate_trajectory(world, trajectory)
 
-        :param k: how many waypoints to compute
-        :return:
-        """
-        # check we do not overflow the queue
-        available_entries = self._waypoints_queue.maxlen - len(self._waypoints_queue)
-        k = min(available_entries, k)
+            # load buffer of waypoints
+            for transform, road_option in new_trajectory[1]:
+                wp = map.get_waypoint(transform.location)
+                waypoint_buffer.append((wp, road_option))
+        return waypoint_buffer
 
-        for _ in range(k):
-            last_waypoint = self._waypoints_queue[-1][0]
-            next_waypoints = list(last_waypoint.next(self._sampling_radius))
-
-            if len(next_waypoints) == 1:
-                # only one option available ==> lanefollowing
-                next_waypoint = next_waypoints[0]
-                road_option = RoadOption.LANEFOLLOW
-            else:
-                # random choice between the possible options
-                road_options_list = retrieve_options(
-                    next_waypoints, last_waypoint)
-
-                road_option = road_options_list[1]
-                # road_option = random.choice(road_options_list)
-
-                next_waypoint = next_waypoints[road_options_list.index(
-                    road_option)]
-
-            self._waypoints_queue.append((next_waypoint, road_option))
+    @staticmethod
+    def get_init_pos(world, route_path):
+        buffer = RoutePlanner._load_route(world, route_path, 5000)
+        waypoint, _ = buffer[0]
+        return waypoint
 
     def run_step(self):
         waypoints = self._get_waypoints()
@@ -92,27 +89,10 @@ class RoutePlanner():
 
     def _get_waypoints(self):
         """
-        Execute one step of local planning which involves running the longitudinal and lateral PID controllers to
-        follow the waypoints trajectory.
-
-        :param debug: boolean flag to activate waypoints debugging
+        Loads route stored waypoints
         :return:
         """
-
-        # not enough waypoints in the horizon? => add more!
-        if len(self._waypoints_queue) < int(self._waypoints_queue.maxlen * 0.5):
-            self._compute_next_waypoints(k=100)
-
-        #   Buffering the waypoints
-        while len(self._waypoint_buffer) < self._buffer_size:
-            if self._waypoints_queue:
-                self._waypoint_buffer.append(
-                    self._waypoints_queue.popleft())
-            else:
-                break
-
         waypoints = []
-
         for i, (waypoint, _) in enumerate(self._waypoint_buffer):
             waypoints.append(
                 [waypoint.transform.location.x, waypoint.transform.location.y, waypoint.transform.rotation.yaw])
@@ -120,7 +100,7 @@ class RoutePlanner():
         # current vehicle waypoint
         self._current_waypoint = self._map.get_waypoint(self._vehicle.get_location())
         # target waypoint
-        self._target_waypoint, self._target_road_option = self._waypoint_buffer[0]
+        self._target_waypoint, self._target_road_option = self._waypoint_buffer[-1]
 
         # purge the queue of obsolete waypoints
         vehicle_transform = self._vehicle.get_transform()
@@ -130,8 +110,9 @@ class RoutePlanner():
             if distance_vehicle(
                     waypoint, vehicle_transform) < self._min_distance:
                 max_index = i
+        # remove past waypoints
         if max_index >= 0:
-            for i in range(max_index - 1):
+            for _ in range(max_index - 1):
                 self._waypoint_buffer.popleft()
 
         return waypoints
