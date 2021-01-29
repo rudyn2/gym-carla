@@ -13,9 +13,9 @@ import carla
 def main():
     # parameters for the gym_carla environment
     params = {
-        'number_of_vehicles': 100,
-        'number_of_walkers': 0,
-        'display_size': 256,  # screen size of bird-eye render
+        'number_of_vehicles': 20,
+        'number_of_walkers': 2,
+        'display_size': 316,  # screen size of bird-eye render
         'max_past_step': 1,  # the number of past steps to draw
         'dt': 0.1,  # time interval between two frames
         'discrete': False,  # whether to use discrete control space
@@ -28,6 +28,7 @@ def main():
         'town': 'Town01',  # which town to simulate
         'task_mode': 'route',  # mode of the task, [random, roundabout (only for Town03)]
         'route_path': '/home/rudy/Documents/leaderboard/data/routes_training.xml',
+        'route_id': 0,
         'max_time_episode': 1000,  # maximum timesteps per episode
         'max_waypt': 1000,  # maximum number of waypoints
         'obs_range': 32,  # observation range (meter)
@@ -38,7 +39,7 @@ def main():
         'max_ego_spawn_times': 200,  # maximum times to spawn ego vehicle
         'display_route': True,  # whether to render the desired route
         'pixor_size': 64,  # size of the pixor labels
-        'pixor': False,  # whether to output PIXOR observation
+        'pixor': True,  # whether to output PIXOR observation
     }
 
     # Set gym-carla environment

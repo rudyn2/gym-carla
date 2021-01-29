@@ -35,11 +35,12 @@ class RoadOption(Enum):
 
 
 class RoutePlanner:
-    def __init__(self, vehicle, buffer_size, route_path):
+    def __init__(self, vehicle, buffer_size, route_path, route_id):
         self._vehicle = vehicle
         self._world = self._vehicle.get_world()
         self._map = self._world.get_map()
         self._route_path = route_path
+        self._route_id = route_id
 
         self._min_distance = 4
 
@@ -52,15 +53,15 @@ class RoutePlanner:
         self._last_traffic_light = None
         self._proximity_threshold = 15.0
 
-        self._waypoint_buffer = self._load_route(self._world, self._route_path, self._buffer_size)
+        self._waypoint_buffer = self._load_route(self._world, self._route_path, self._buffer_size, self._route_id)
 
     @staticmethod
-    def _load_route(world, route_path, buffer_size):
+    def _load_route(world, route_path, buffer_size, route_id):
         map = world.get_map()
         waypoint_buffer = deque(maxlen=buffer_size)
         with open(route_path, "r") as xml_obj:
             routes_xml = xmltodict.parse(xml_obj.read())['routes']['route']
-            route = routes_xml[0]
+            route = routes_xml[route_id]
             trajectory = []
             for waypoint in route['waypoint']:
                 loc = carla.Location(x=float(waypoint['@x']),
@@ -76,8 +77,8 @@ class RoutePlanner:
         return waypoint_buffer
 
     @staticmethod
-    def get_init_pos(world, route_path):
-        buffer = RoutePlanner._load_route(world, route_path, 5000)
+    def get_init_pos(world, route_path, route_id):
+        buffer = RoutePlanner._load_route(world, route_path, buffer_size=5000, route_id=route_id)
         waypoint, _ = buffer[0]
         return waypoint
 
@@ -90,7 +91,6 @@ class RoutePlanner:
     def _get_waypoints(self):
         """
         Loads route stored waypoints
-        :return:
         """
         waypoints = []
         for i, (waypoint, _) in enumerate(self._waypoint_buffer):

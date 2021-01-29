@@ -39,6 +39,7 @@ class CarlaEnv(gym.Env):
         self.dt = params['dt']
         self.task_mode = params['task_mode']
         self.route_path = params['route_path']
+        self.route_id = params['route_id']
         self.max_time_episode = params['max_time_episode']
         self.max_waypt = params['max_waypt']
         self.obs_range = params['obs_range']
@@ -191,7 +192,7 @@ class CarlaEnv(gym.Env):
                 self.start = [52.1 + np.random.uniform(-5, 5), -4.2, 178.66]  # random
                 transform = set_carla_transform(self.start)
             if self.task_mode == 'route':
-                init_wp = RoutePlanner.get_init_pos(self.world, self.route_path)
+                init_wp = RoutePlanner.get_init_pos(self.world, self.route_path, self.route_id)
 
                 # now find a suitable location to spawn
                 candidates = self.world.get_map().get_spawn_points()
@@ -286,7 +287,7 @@ class CarlaEnv(gym.Env):
         self.settings.synchronous_mode = True
         self.world.apply_settings(self.settings)
 
-        self.routeplanner = RoutePlanner(self.ego, self.max_waypt, self.route_path)
+        self.routeplanner = RoutePlanner(self.ego, self.max_waypt, self.route_path, self.route_id)
         self.waypoints, _, self.vehicle_front = self.routeplanner.run_step()
 
         # Set ego information for render
